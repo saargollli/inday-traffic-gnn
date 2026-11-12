@@ -1,21 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import CanvasRenderer from './components/CanvasRenderer';
 import { createSimulation, TICK_MS } from './simulation/engine';
-import { runInitialDatasetTest, runSameDatasetTest } from './simulation/experiment';
+import { buildTrainingDataset, clampTripCount, runInitialDatasetTest, runSameDatasetTest } from './simulation/experiment';
 import { TRAFFIC_LEVELS } from './utils/trafficColor';
 import './App.css';
-
-function compareText(result) {
-  const mapDelta = (result.trained.mapLoad - result.untrained.mapLoad) * 100;
-  const peakDelta = (result.trained.peakLoad - result.untrained.peakLoad) * 100;
-  const map = Math.abs(mapDelta) < 0.05
-    ? 'Average traffic across the map stayed about the same.'
-    : `Average traffic across the map ${mapDelta < 0 ? 'fell' : 'rose'} by ${Math.abs(mapDelta).toFixed(1)} points.`;
-  const peak = Math.abs(peakDelta) < 0.05
-    ? 'The busiest road stayed about the same.'
-    : `The busiest road ${peakDelta < 0 ? 'fell' : 'rose'} by ${Math.abs(peakDelta).toFixed(1)} points.`;
-  return `${map} ${peak} Trained for ${result.rounds} rounds, loss ${result.loss.toFixed(3)}.`;
-}
 
 function App() {
   const simRef = useRef(null);
@@ -23,8 +11,7 @@ function App() {
 
   const [running, setRunning] = useState(false);
   const [panel, setPanel] = useState(() => simRef.current.panel());
-  const [lastAdd, setLastAdd] = useState(null);
-  const [tripCount, setTripCount] = useState(12);
+  const [tripCount, setTripCount] = useState(24);
   const [compareBusy, setCompareBusy] = useState(false);
   const [compareNote, setCompareNote] = useState('');
   const [compare, setCompare] = useState(null);
@@ -37,8 +24,14 @@ function App() {
       busy = true;
       try {
         simRef.current.advance();
-        setPanel(simRef.current.panel());
-      } finally {
+        const next = simRef.current.panel();
+        setPanel(next);
+        if (next.cohortTotal > 0 && next.vehicles === 0 && next.cohortDone >= next.cohortTotal) {
+          setRunning(false);
+          simRef.current.fitLearnedTrips();
+          setPanel(simRef.current.panel());
+        }
+    } finally {
         busy = false;
       }
     }, TICK_MS);
@@ -46,40 +39,18 @@ function App() {
   }, [running]);
 
   const trained = panel.rounds > 0;
-  const currentStep = !compare || !compare.untrained ? 1 : !compare.trained ? 2 : 3;
-  const steps = [
-    { n: 1, title: 'Initial test', detail: 'Run the prepared trips on the untrained model.' },
-    { n: 2, title: 'Collect', detail: 'Add vehicles, then Run. The model trains on those cars.' },
-    { n: 3, title: 'Test again', detail: 'Run the same trips. The trained model names a lighter path.' }
-  ];
-  const roadsAreEmpty = panel.busiest.every((light) => light.level === 'empty');
 
   return (
     <div className="traffic-app">
       <header className="traffic-header">
-        <div>
-          <p className="traffic-kicker">Temporal graph model on each signal</p>
-          <h1>Predicting Traffic Congestion Using Federated Learning</h1>
-      </div>
+        <h1>Predicting Traffic Congestion Using Federated Learning</h1>
         <div className="traffic-status">
           <strong>{running ? 'Running' : 'Paused'} · {panel.mode === 'test' ? 'Test' : 'Collect'}</strong>
-          {panel.conflicts === 0 ? 'One green per intersection' : `${panel.conflicts} intersections have two greens`}
         </div>
       </header>
 
       <main className="traffic-main">
         <section className="net-card">
-          <ol className="steps">
-            {steps.map((step) => {
-              const state = step.n === currentStep ? 'current' : step.n < currentStep ? 'done' : 'waiting';
-              return (
-                <li key={step.n} className={`step ${state}`}>
-                  <b><span className="step-num">{step.n < currentStep ? '✓' : step.n}</span>{step.title}</b>
-                  <span>{step.detail}</span>
-                </li>
-              );
-            })}
-          </ol>
           <CanvasRenderer simRef={simRef} />
         </section>
 
@@ -96,9 +67,12 @@ function App() {
                         <button
                 className="btn-add"
                 onClick={() => {
-                  const added = simRef.current.addVehicles();
-                  setLastAdd(added);
-                  setPanel(simRef.current.panel());
+                  const sim = simRef.current;
+                  const count = clampTripCount(tripCount);
+                  sim.cohortSeed = (sim.cohortSeed || 0) + 1;
+                  const batch = buildTrainingDataset(sim, count, Date.now() + sim.cohortSeed * 97);
+                  sim.addTripBatch(batch);
+                  setPanel(sim.panel());
                 }}
               >
                 Add vehicles
@@ -108,7 +82,6 @@ function App() {
                 onClick={() => {
                   setRunning(false);
                   simRef.current.resetEnvironment();
-                  setLastAdd(null);
                   setPanel(simRef.current.panel());
                 }}
               >
@@ -136,47 +109,35 @@ function App() {
                 Test model
                         </button>
                     </div>
-            <p className="file-note">Leave Collect selected. Add vehicles and Run is what trains the model.</p>
-            {lastAdd && (
-              <p className="file-note">
-                Last add: {lastAdd.added} vehicles, {lastAdd.main} on a main corridor, {lastAdd.random} choosing randomly at each intersection.
-              </p>
-            )}
             <p className="legend">
               {TRAFFIC_LEVELS.map((level) => (
                 <span key={level.id} className="legend-item">
                   <span className="swatch" style={{ background: level.color }} /> {level.label}
-                </span>
+                                </span>
               ))}
             </p>
             <p className="legend">
               <span className="swatch" style={{ background: '#1d4ed8' }} /> Main corridor
               <span className="swatch" style={{ background: '#64748b', marginLeft: 8 }} /> Random
               <span className="swatch" style={{ background: '#ea580c', marginLeft: 8 }} /> Rerouted
-              <span style={{ marginLeft: 8 }}>Number on a moving car is its speed.</span>
             </p>
           </section>
 
           <section className="panel-card">
             <h2>Fixed-trip test</h2>
-            <ol className="mini-steps">
-              <li>Test the prepared source and destination list on the initial model.</li>
-              <li>Press Add vehicles, then Run. Wait until FedAvg rounds is above 0.</li>
-              <li>Test that same list again and compare the two results.</li>
-            </ol>
             <label className="trip-count">
-              Vehicles
+              Vehicles (4–60)
               <input
                 type="number"
                 min="4"
-                max="20"
+                max="60"
                 value={tripCount}
                 disabled={compareBusy}
                 onChange={(event) => setTripCount(Number(event.target.value))}
               />
             </label>
             <div className="compare-actions">
-              <button
+                      <button
                 className="btn-add compare-btn"
                 disabled={compareBusy}
                 onClick={async () => {
@@ -186,15 +147,10 @@ function App() {
                   try {
                     const result = await runInitialDatasetTest(simRef.current, {
                       count: tripCount,
-                      onProgress: (note) => {
-                        setCompareNote(note);
-                        setPanel(simRef.current.panel());
-                      }
+                      onProgress: () => setPanel(simRef.current.panel())
                     });
                     setCompare(result);
-                    setCompareNote(result.saved
-                      ? 'Initial result saved. Now press Add vehicles, then Run.'
-                      : 'Initial result is shown. Now press Add vehicles, then Run.');
+                    setCompareNote('');
                   } catch (err) {
                     setCompareNote(err && err.message ? err.message : 'Initial test failed');
                   } finally {
@@ -204,8 +160,8 @@ function App() {
                 }}
               >
                 {compareBusy && !compare ? 'Running the dataset' : 'Test initial model'}
-              </button>
-              <button
+                      </button>
+                      <button
                 className="btn-run compare-btn"
                 disabled={compareBusy || !compare || !compare.untrained || !trained}
                 onClick={async () => {
@@ -213,15 +169,10 @@ function App() {
                   setCompareBusy(true);
                   try {
                     const result = await runSameDatasetTest(simRef.current, {
-                      onProgress: (note) => {
-                        setCompareNote(note);
-                        setPanel(simRef.current.panel());
-                      }
+                      onProgress: () => setPanel(simRef.current.panel())
                     });
                     setCompare(result);
-                    setCompareNote(result.saved
-                      ? 'Saved under data/temporal.'
-                      : 'Shown here. Restart npm start to write the files.');
+                    setCompareNote('');
                   } catch (err) {
                     setCompareNote(err && err.message ? err.message : 'Dataset test failed');
                   } finally {
@@ -231,8 +182,8 @@ function App() {
                 }}
               >
                 {compareBusy && compare ? 'Running the dataset' : 'Test the same dataset'}
-              </button>
-            </div>
+                      </button>
+                    </div>
             {compareNote && <p className="file-note">{compareNote}</p>}
             {compare && (
               <>
@@ -257,17 +208,12 @@ function App() {
                       <td>{compare.trained ? compare.trained.meanWaiting.toFixed(2) : '—'}</td>
                     </tr>
                     <tr>
-                      <td>Finished</td>
+                      <td>Finished all trips</td>
                       <td>{compare.untrained.finished}/{compare.dataset.count}</td>
                       <td>{compare.trained ? `${compare.trained.finished}/${compare.dataset.count}` : '—'}</td>
                     </tr>
                   </tbody>
                 </table>
-                {compare.trained && (
-                  <p className={compare.trained.peakLoad < compare.untrained.peakLoad ? 'file-note save-ok' : 'file-note'}>
-                    {compareText(compare)}
-                  </p>
-                )}
                 <div className="trip-list">
                   {compare.dataset.vehicles.slice(0, 6).map((vehicle) => {
                     const before = compare.untrained.vehicles.find((row) => row.id === vehicle.id);
@@ -280,10 +226,10 @@ function App() {
                         <span>{vehicle.plan}</span>
                         <span>Untrained: {before ? before.path : '—'}</span>
                         <span>Trained: {compare.trained && after ? after.path : '—'}</span>
-                      </div>
+                    </div>
                     );
                   })}
-                </div>
+                  </div>
               </>
             )}
           </section>
@@ -291,28 +237,19 @@ function App() {
           <section className="panel-card">
             <h2>Series</h2>
             <div className="stat-grid">
-              <div><span>Vehicles</span><strong>{panel.vehicles}</strong></div>
+              <div><span>Still driving</span><strong>{panel.vehicles}</strong></div>
+              <div><span>Finished trips</span><strong>{panel.cohortTotal ? `${panel.cohortDone}/${panel.cohortTotal}` : '—'}</strong></div>
               <div><span>Step</span><strong>{panel.step}</strong></div>
               <div><span>Samples saved</span><strong>{panel.samples}</strong></div>
               <div><span>FedAvg rounds</span><strong>{panel.rounds}</strong></div>
               <div><span>Train loss</span><strong>{panel.loss.toFixed(3)}</strong></div>
               <div><span>Forecast fit</span><strong>{panel.accuracy == null ? '—' : `${panel.accuracy.toFixed(0)}%`}</strong></div>
-                    </div>
-            <p className="file-note">
-              Greens now: {panel.greens}. Yellow transitions: {panel.yellows}. Each green length is drawn separately, so the signals do not flip together.
-            </p>
-            <p className={panel.saving === false ? 'file-note save-bad' : 'file-note save-ok'}>
-              {panel.saving === false
-                ? 'Could not write data/temporal. Restart npm start so the logger is loaded.'
-                : 'Writing data/temporal/signals.jsonl and predictions.jsonl'}
-            </p>
+                      </div>
           </section>
 
           <section className="panel-card">
             <h2>Busiest signals</h2>
-            {roadsAreEmpty ? (
-              <p className="file-note">No cars on the roads yet. A road with cars turns green, then amber, then red as it fills.</p>
-            ) : panel.busiest.filter((light) => light.level !== 'empty').map((light) => (
+            {panel.busiest.filter((light) => light.level !== 'empty').map((light) => (
               <div
                 className="light-row"
                 key={light.id}
@@ -331,12 +268,24 @@ function App() {
             {panel.notices.length > 0 && (
               <>
                 <h2 style={{ marginTop: 12 }}>Notices</h2>
-                {panel.notices.map((notice) => (
-                  <div className="notice-row" key={`${notice.id}-${notice.step}`}>
-                    <span>Vehicle {notice.id}</span>
-                    <span>{notice.text}</span>
-                        </div>
-                ))}
+                {panel.notices.map((notice) => {
+                  const lines = notice.lines && notice.lines.length ? notice.lines : [notice.text];
+                  return (
+                    <div className="notice-row" key={`${notice.id}-${notice.step}`}>
+                      <span>Vehicle {notice.id}</span>
+                      <span className="notice-copy">
+                        {lines.map((line) => (
+                          <span
+                            key={line}
+                            className={line.indexOf('Faster route:') === 0 ? 'faster' : line.indexOf('Destination:') === 0 ? 'dest' : ''}
+                          >
+                            {line}
+                    </span>
+                        ))}
+                    </span>
+                  </div>
+                  );
+                })}
                       </>
                     )}
           </section>

@@ -100,18 +100,104 @@ function drawVehicle(ctx, vehicle) {
   }
 
   if (vehicle.notice) {
-    ctx.font = 'bold 11px sans-serif';
+    const lines = vehicle.notice.lines && vehicle.notice.lines.length
+      ? vehicle.notice.lines
+      : [vehicle.notice.text];
+    ctx.font = 'bold 10px sans-serif';
     ctx.textAlign = 'center';
-    const width = ctx.measureText(vehicle.notice.text).width;
+    let width = 0;
+    for (let i = 0; i < lines.length; i++) {
+      width = Math.max(width, ctx.measureText(lines[i]).width);
+    }
+    const lineH = 13;
+    const height = lines.length * lineH + 8;
+    let top = vehicle.y - 16 - height;
+    if (top < 6) top = vehicle.y + 14;
     ctx.fillStyle = '#fff7ed';
     ctx.strokeStyle = '#fdba74';
     ctx.lineWidth = 1;
-    rounded(ctx, vehicle.x - width / 2 - 6, vehicle.y - 28, width + 12, 16, 4);
+    rounded(ctx, vehicle.x - width / 2 - 6, top, width + 12, height, 4);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = '#9a3412';
-    ctx.fillText(vehicle.notice.text, vehicle.x, vehicle.y - 16);
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].indexOf('Faster route:') === 0) ctx.fillStyle = '#c2410c';
+      else if (lines[i].indexOf('Destination:') === 0) ctx.fillStyle = '#1e3a8a';
+      else ctx.fillStyle = '#334155';
+      ctx.fillText(lines[i], vehicle.x, top + 12 + i * lineH);
+    }
   }
+}
+
+function pointToRect(px, py, rect) {
+  const dx = Math.max(rect.x - px, 0, px - (rect.x + rect.w));
+  const dy = Math.max(rect.y - py, 0, py - (rect.y + rect.h));
+  return Math.hypot(dx, dy);
+}
+
+function roadClearance(rect, roads) {
+  let nearest = Infinity;
+  for (let r = 0; r < roads.length; r++) {
+    const pts = roads[r].drawPoints;
+    for (let i = 1; i < pts.length; i++) {
+      for (let s = 0; s <= 6; s++) {
+        const t = s / 6;
+        const px = pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t;
+        const py = pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t;
+        nearest = Math.min(nearest, pointToRect(px, py, rect));
+      }
+    }
+  }
+  return nearest;
+}
+
+function boxesOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+let labelSpots = null;
+
+function placeLabels(ctx, sim) {
+  ctx.font = 'bold 11px sans-serif';
+  const placed = [];
+  const zones = sim.zones.slice().sort((a, b) => {
+    const degree = (zone) => (sim.outgoing.get(zone.id) || []).length;
+    return degree(b) - degree(a);
+  });
+  const spots = new Array(sim.zones.length);
+  for (let z = 0; z < zones.length; z++) {
+    const zone = zones[z];
+    const width = ctx.measureText(zone.name).width;
+    const height = 14;
+    let best = null;
+    let bestScore = -Infinity;
+    for (let k = 0; k < 16; k++) {
+      const angle = (Math.PI * 2 * k) / 16 - Math.PI / 2;
+      const ux = Math.cos(angle);
+      const uy = Math.sin(angle);
+      const base = 34 + Math.abs(ux) * width / 2 + Math.abs(uy) * height / 2;
+      for (let step = 0; step < 2; step++) {
+        const reach = base + step * 16;
+        const cx = zone.x + ux * reach;
+        const cy = zone.y + uy * reach;
+        const rect = { x: cx - width / 2 - 4, y: cy - height / 2 - 2, w: width + 8, h: height + 4 };
+        if (rect.x < 6 || rect.y < 48 || rect.x + rect.w > 1194 || rect.y + rect.h > 1072) continue;
+        let blocked = false;
+        for (let p = 0; p < placed.length; p++) {
+          if (boxesOverlap(rect, placed[p])) blocked = true;
+        }
+        if (blocked) continue;
+        const clearance = roadClearance(rect, sim.roads);
+        if (clearance > bestScore) {
+          bestScore = clearance;
+          best = { x: cx, y: cy, rect };
+        }
+      }
+    }
+    if (!best) best = { x: zone.x, y: zone.y - 36, rect: null };
+    spots[zone.id] = best;
+    if (best.rect) placed.push(best.rect);
+  }
+  return spots;
 }
 
 function paint(ctx, sim) {
@@ -148,11 +234,23 @@ function paint(ctx, sim) {
     ctx.arc(zone.x, zone.y, 22, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = '#0f172a';
-    ctx.font = 'bold 11px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(zone.name, zone.x, zone.y + 38);
   }
+
+  if (!labelSpots) labelSpots = placeLabels(ctx, sim);
+  ctx.font = 'bold 11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < sim.zones.length; i++) {
+    const zone = sim.zones[i];
+    const spot = labelSpots[zone.id];
+    const width = ctx.measureText(zone.name).width;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+    rounded(ctx, spot.x - width / 2 - 4, spot.y - 8, width + 8, 16, 4);
+    ctx.fill();
+    ctx.fillStyle = '#0f172a';
+    ctx.fillText(zone.name, spot.x, spot.y);
+  }
+  ctx.textBaseline = 'alphabetic';
 
   for (let i = 0; i < sim.signals.length; i++) drawSignal(ctx, sim.signals[i]);
   for (let i = 0; i < sim.vehicles.length; i++) drawVehicle(ctx, sim.vehicles[i]);
@@ -213,10 +311,12 @@ export default function CanvasRenderer({ simRef }) {
   }, [simRef]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="net-canvas"
-      aria-label="Road network with a signal on every incoming road"
-    />
+    <div className="net-stage">
+      <canvas
+        ref={canvasRef}
+        className="net-canvas"
+        aria-label="Road network with a signal on every incoming road"
+      />
+    </div>
   );
 }

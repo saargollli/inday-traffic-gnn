@@ -1,5 +1,8 @@
 .traffic-app {
-  min-height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: #e7eef6;
   color: #142033;
   font-family: "Segoe UI", sans-serif;
@@ -10,7 +13,8 @@
   justify-content: space-between;
   gap: 16px;
   align-items: flex-end;
-  padding: 18px 22px 12px;
+  flex: 0 0 auto;
+  padding: 10px 16px 8px;
 }
 
 .traffic-header h1 {
@@ -39,24 +43,38 @@
 .traffic-main {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 16px;
-  padding: 0 16px 20px;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  padding: 0 12px 12px;
 }
 
 .net-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
   background: #ffffff;
   border: 1px solid #d5dfeb;
   border-radius: 16px;
-  padding: 12px;
-  min-width: 0;
+  padding: 10px;
+}
+
+.net-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
 }
 
 .net-canvas {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: contain;
   display: block;
   border-radius: 12px;
-  background: #f5f8fc;
+  background: transparent;
 }
 
 .steps {
@@ -123,6 +141,8 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .panel-card {
@@ -215,6 +235,28 @@
   margin-top: 6px;
   border-left: 4px solid transparent;
   border-radius: 8px;
+}
+
+.notice-row {
+  align-items: flex-start;
+}
+
+.notice-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+}
+
+.notice-copy .dest {
+  color: #1e3a8a;
+  font-weight: 700;
+}
+
+.notice-copy .faster {
+  color: #c2410c;
+  font-weight: 700;
 }
 
 .legend-item {
@@ -336,7 +378,11 @@
 .save-bad { color: #b91c1c; }
 
 @media (max-width: 980px) {
-  .traffic-main { grid-template-columns: 1fr; }
+  body { overflow: auto; }
+  .traffic-app { height: auto; min-height: 100dvh; overflow: visible; }
+  .traffic-main { grid-template-columns: 1fr; overflow: visible; }
+  .net-stage { height: 70vh; }
+  .side-panel { overflow: visible; }
   .traffic-header { flex-direction: column; align-items: flex-start; }
   .traffic-status { text-align: left; }
   .steps { grid-template-columns: 1fr; }

@@ -2,9 +2,9 @@
 // Each node is one signal. Weights are shared. Loss is mean squared error on
 // the congestion those signals will have HORIZON steps later.
 
-export const FEATURES = 9;
+export const FEATURES = 10;
 export const WINDOW = 8;
-export const HORIZON = 5;
+export const HORIZON = 40;
 
 const HIDDEN = 12;
 
@@ -322,14 +322,21 @@ export class TemporalGNN {
     const { y, steps } = this.forward(window, true);
     const count = nodeIds.length;
     let loss = 0;
+    let weightSum = 0;
     const dLogit = zeros(this.n);
     for (let s = 0; s < count; s++) {
       const i = nodeIds[s];
+      const weight = 1 + 4 * targets[i];
+      weightSum += weight;
       const err = y[i] - targets[i];
-      loss += err * err;
-      dLogit[i] = (2 * err / count) * y[i] * (1 - y[i]);
+      loss += weight * err * err;
+      dLogit[i] = weight * err;
     }
-    loss /= count;
+    loss /= weightSum;
+    for (let s = 0; s < count; s++) {
+      const i = nodeIds[s];
+      dLogit[i] = (2 * dLogit[i] / weightSum) * y[i] * (1 - y[i]);
+    }
 
     const hLast = steps[steps.length - 1].hNew;
     let dH = new Array(this.n);
@@ -411,24 +418,34 @@ export class TemporalGNN {
   federatedRound(window, targets, groups, lr) {
     const start = this.getWeights();
     const updated = [];
+    const masses = [];
     let loss = 0;
+    let lossWeight = 0;
     for (let g = 0; g < groups.length; g++) {
       const nodes = groups[g];
       if (nodes.length === 0) continue;
+      let mass = 0.2;
+      for (let n = 0; n < nodes.length; n++) mass += targets[nodes[n]] || 0;
       this.setWeights(start);
-      loss += this.train(window, targets, nodes, lr);
+      const local = this.train(window, targets, nodes, lr);
       updated.push(this.getWeights());
+      masses.push(mass);
+      loss += local * mass;
+      lossWeight += mass;
     }
     if (updated.length === 0) return this.loss;
-    this.setWeights(averageWeights(updated));
-    this.loss = loss / updated.length;
+    this.setWeights(averageWeights(updated, masses));
+    this.loss = lossWeight > 0 ? loss / lossWeight : this.loss;
     return this.loss;
   }
 }
 
-function averageWeights(list) {
+function averageWeights(list, masses) {
   const acc = list[0];
   const n = list.length;
+  let total = 0;
+  for (let i = 0; i < n; i++) total += masses ? masses[i] : 1;
+  if (total === 0) total = n;
   const keys2 = ['Wg', 'Wz', 'Uz', 'Wr', 'Ur', 'Wn', 'Un', 'Wo'];
   const keys1 = ['bg', 'bz', 'br', 'bn', 'bo'];
   const out = {
@@ -453,14 +470,14 @@ function averageWeights(list) {
       const A = out[key];
       const B = w[key];
       for (let r = 0; r < A.length; r++) {
-        for (let c = 0; c < A[r].length; c++) A[r][c] += B[r][c] / n;
+        for (let c = 0; c < A[r].length; c++) A[r][c] += B[r][c] * ((masses ? masses[i] : 1) / total);
       }
     }
     for (let k = 0; k < keys1.length; k++) {
       const key = keys1[k];
       const A = out[key];
       const B = w[key];
-      for (let r = 0; r < A.length; r++) A[r] += B[r] / n;
+      for (let r = 0; r < A.length; r++) A[r] += B[r] * ((masses ? masses[i] : 1) / total);
     }
   }
   return out;
